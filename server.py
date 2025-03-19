@@ -3,6 +3,8 @@ import threading
 import sqlite3
 from hashlib import sha256
 from datetime import datetime
+import os
+from cryptography.fernet import Fernet
 
 
 class Database:
@@ -141,6 +143,17 @@ class ChatServer:
         self.clients_lock = threading.Lock()
         self.max_users = semaphore
 
+        self.key = Fernet.generate_key()
+        self.cipher = Fernet(self.key)
+        os.makedirs('chat_log', exist_ok=True)
+        self.chat_log = os.path.join('chat_log', 'messages.log')
+
+    # store an encrypted message on the chat log
+    def save_enrcrypt_message(self, message):
+        encrypted_message = self.cipher.encrypt(message.encode())
+        with open(self.chat_log, 'ab') as f:
+            f.write(encrypted_message + b'\n')
+
     def client_connection(self, client_socket, username):
 
         # add the new user to the list of current clients (observers) list
@@ -183,6 +196,9 @@ class ChatServer:
                 try:
                     sent_at = datetime.now().strftime("%H:%M:%S")
                     formatted_message = f"from: {senders_username}, at:{sent_at}: {message}\n"
+
+                    self.save_enrcrypt_message(formatted_message)
+
                     client_socket.send(formatted_message.encode())  # encode it to send it securely
                 except:
                     pass  # the client is probably disconnected
