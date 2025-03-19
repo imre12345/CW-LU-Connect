@@ -101,10 +101,13 @@ class AuthenticateClient:
         # Get result if login was succesful
         result = c_socket.recv(1024).decode()
 
-        if "Successful" in result:
+        if "queue" in result:
+            return c_socket, "wait:" + result
+        elif "Successful" in result:
             # if the message sent contains Successful it means that the user has logged in
             return c_socket, result
         else:
+            # Failed login
             c_socket.close()
             return None, result
 
@@ -120,7 +123,9 @@ class AuthenticateClient:
         # get result if register was successful
         result = c_socket.recv(1024).decode()
 
-        if "Successful" in result:
+        if "queue" in result:
+            return c_socket, "wait:" + result
+        elif "Successful" in result:
             # if the message sent contains Successful it means that the user has registered
             return c_socket, result
         else:
@@ -159,12 +164,29 @@ class ChatClient:
     # process the result of login or register
     def handle_auth_result(self, socket, result):
         if socket:
-            # authentication was successful
-            self.ui.chat_ui(self.send_message, self.exit_chat)
-            self.start_thread(socket)
+            if "queue" in result:
+                messagebox.showinfo("Waiting", "the server is full, wait in the queue")
+                # start a thread that waits until a place becomes available
+                threading.Thread(target=self.wait_in_que, args=[socket]).start()
+            else:
+                # authentication was successful
+                self.ui.chat_ui(self.send_message, self.exit_chat)
+                self.start_thread(socket)
         else:
             messagebox.showinfo("Result", result)
 
+    def wait_in_que(self, socket):
+        while True:
+            try:
+                message = socket.recv(1024).decode()
+                if "Successful" in message:
+                    # there is finally an empty space
+                    # the UI should be set up before starting the message thread
+                    self.root.after(0, self.ui.chat_ui, self.send_message, self.exit_chat)
+                    self.root.after(10, self.start_thread, socket)
+                    break
+            except:
+                break
 
     def start_thread(self, socket):
         self.socket = socket
