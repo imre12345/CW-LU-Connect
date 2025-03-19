@@ -57,8 +57,30 @@ class Authenticate:
         self.port = port
         self.db = Database()
 
+        # limiting the number of connections to 3 with semaphore
+        self.max_users = threading.Semaphore(3)
+
+        # waiting queue:
+        self.waiting_queue = []
+        self.waiting_lock = threading.Lock()
 
     def authenticate(self, client_socket):
+        if not self.max_users.acquire(blocking=False):
+            with self.waiting_lock:
+                self.waiting_queue.append(client_socket)
+                position = len(self.waiting_queue)
+
+            waiting_message = f"The server is full, you are {position}. in queue, please wait.\n"
+            client_socket.send(waiting_message.encode())
+
+            # this will wait until release() is called
+            self.max_users.acquire()
+
+            # release was called there is an empty space
+            with self.waiting_lock:
+                if client_socket in self.waiting_queue:
+                    self.waiting_queue.remove(client_socket)
+
         # receive the authentication request:
         try:
             auth_message = client_socket.recv(1024).decode()
@@ -89,10 +111,11 @@ class Authenticate:
                     client_socket.send(b"Login has failed!")
 
             if authenticated:
-                # if the authentication succeded, the user can be joined to the groupchat
-                ChatServer(self.db).client_connection(client_socket, request[1])
+                # Pass the semaphore to ChatServer
+                ChatServer(self.db, self.max_users).client_connection(client_socket, request[1])
             else:
                 client_socket.close()
+                self.max_users.release()
         except Exception as e:
             print(f"Authentication error: {e}")
             client_socket.close()
@@ -112,10 +135,11 @@ class Authenticate:
 
 
 class ChatServer:
-    def __init__(self, database):
+    def __init__(self, database, semaphore=None):
         self.db = database
         self.clients = []
         self.clients_lock = threading.Lock()
+        self.max_users = semaphore
 
     def client_connection(self, client_socket, username):
 
@@ -126,22 +150,29 @@ class ChatServer:
         # send a message that the user has joined
         self.send_all("the server", f"{username} joined.")
 
-        # keep the connection and listen for messages
-        while True:
-            message = client_socket.recv(1024).decode().strip()
+        try:
+            # keep the connection and listen for messages
+            while True:
+                message = client_socket.recv(1024).decode().strip()
+                if not message:
+                    break
 
-            # Check if it's an exit message
-            if message == "EXIT":
-                # delete client from the list of current clients
-                with self.clients_lock:
-                    self.clients = [(user, socket) for user, socket in self.clients if socket != client_socket]
+                # Check for exit message
+                if message == "EXIT":
+                    break
 
-                # send a message that the user has left
-                self.send_all("the server", f"{username} left.")
-                break
+                # when a message is received send it to the groupchat
+                self.send_all(username, message)
+        finally:
+            # delete client from the list of current clients
+            with self.clients_lock:
+                self.clients = [(n, s) for n, s in self.clients if s != client_socket]
 
-            # when a message is received send it to the groupchat
-            self.send_all(username, message)
+            # send a message that the user has left
+            self.send_all("the server", f"{username} left.")
+
+            # user has left so the semaphore can be released
+            self.max_users.release()
 
 
 
