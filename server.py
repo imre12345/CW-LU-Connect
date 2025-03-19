@@ -129,6 +129,17 @@ class ChatServer:
         # keep the connection and listen for messages
         while True:
             message = client_socket.recv(1024).decode().strip()
+
+            # Check if it's an exit message
+            if message == "EXIT":
+                # delete client from the list of current clients
+                with self.clients_lock:
+                    self.clients = [(user, socket) for user, socket in self.clients if socket != client_socket]
+
+                # send a message that the user has left
+                self.send_all("the server", f"{username} left.")
+                break
+
             # when a message is received send it to the groupchat
             self.send_all(username, message)
 
