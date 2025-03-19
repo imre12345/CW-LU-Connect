@@ -43,7 +43,7 @@ class UI:
         register_button = tk.Button(button_frame, text="Register", command=register)
         register_button.pack()
 
-    def chat_ui(self, send, exit_app):
+    def chat_ui(self, send, exit_app, mute):
         # destroying the frames used for authentication to "hide them"
         for frame in self.root.winfo_children():
             frame.destroy()
@@ -54,22 +54,26 @@ class UI:
 
         # this is where the chat is displayed
         self.chat_area = scrolledtext.ScrolledText(chat_frame, state=tk.DISABLED, wrap=tk.WORD)
-        self.chat_area.pack(fill=tk.BOTH, expand=True)
+        self.chat_area.pack(fill=tk.BOTH, expand=True, padx=10)
 
         # message input
         self.input_frame = tk.Frame(chat_frame)
-        self.input_frame.pack(fill=tk.X)
+        self.input_frame.pack(fill=tk.X, padx=10)
 
         self.message_field = tk.Entry(self.input_frame)
         self.message_field.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         # trigger the message sending function
         send_button = tk.Button(self.input_frame, text="Send", command=send)
-        send_button.pack(side=tk.RIGHT)
+        send_button.pack(side=tk.RIGHT, padx=10)
 
         # exit button
         exit_button = tk.Button(self.input_frame, text="Exit", command=exit_app, bg="red", fg="white")
-        exit_button.pack(side=tk.RIGHT, padx=5)
+        exit_button.pack(side=tk.RIGHT, padx=10)
+
+        # Add mute button
+        self.mute_button = tk.Button(self.input_frame, text="🔊 Mute", command=mute)
+        self.mute_button.pack(side=tk.RIGHT, padx=10)
 
     def show_message(self, message):
         self.chat_area.config(state=tk.NORMAL)
@@ -140,9 +144,14 @@ class ChatClient:
         self.auth_client = AuthenticateClient()
         self.socket = None
         self.username = None
+        self.muted = False
 
         # initiate the authentication process
         self.ui.authentication_ui(self.handle_login, self.handle_register)
+
+    def mute_unmute(self):
+        self.muted = not self.muted
+        self.ui.mute_button.config(text="Unmute" if self.muted else "Mute")
 
     # based on which button is pressed, either the register or the login related functions are called.
     def handle_login(self):
@@ -152,17 +161,17 @@ class ChatClient:
         # both registration and login has the same pattern:
         # get username and password, pass it to client authentication, and then process the result
         socket, result = self.auth_client.login(username, password)
-        self.handle_auth_result(socket, result)
+        self.handle_auth_result(socket, result, username)
 
     def handle_register(self):
         username = self.ui.username_field.get()
         password = self.ui.password_field.get()
 
         socket, result = self.auth_client.register(username, password)
-        self.handle_auth_result(socket, result)
+        self.handle_auth_result(socket, result, username)
 
     # process the result of login or register
-    def handle_auth_result(self, socket, result):
+    def handle_auth_result(self, socket, result, username):
         if socket:
             if "queue" in result:
                 messagebox.showinfo("Waiting", "the server is full, wait in the queue")
@@ -170,7 +179,8 @@ class ChatClient:
                 threading.Thread(target=self.wait_in_que, args=[socket]).start()
             else:
                 # authentication was successful
-                self.ui.chat_ui(self.send_message, self.exit_chat)
+                self.username = username
+                self.ui.chat_ui(self.send_message, self.exit_chat, self.mute_unmute)
                 self.start_thread(socket)
         else:
             messagebox.showinfo("Result", result)
@@ -182,7 +192,7 @@ class ChatClient:
                 if "Successful" in message:
                     # there is finally an empty space
                     # the UI should be set up before starting the message thread
-                    self.root.after(0, self.ui.chat_ui, self.send_message, self.exit_chat)
+                    self.root.after(0, self.ui.chat_ui, self.send_message, self.exit_chat, self.mute_unmute)
                     self.root.after(10, self.start_thread, socket)
                     break
             except:
@@ -216,18 +226,26 @@ class ChatClient:
             try:
                 message = self.socket.recv(1024).decode()
                 if not message:
+                    messagebox.showerror("Error", "Server closed the connection")
+                    self.socket.close()
                     break
 
                 # show the message
                 self.ui.show_message(message)
-            except:
-                break
 
-        # at this point connection was lost
-        if self.socket:
-            messagebox.showerror("Error", "lost connection to the server")
-            self.socket.close()
-            self.socket = None
+                # no notification for the own message of the user, and no notification when joining
+                if not self.muted and f"from: {self.username}" not in message.split(",") and all(word not in message for word in["joined.", "Successful"]):
+                    self.root.bell()  # notification sound
+
+                    # create a new thread for the notification pup-up, so it does not block the main thread
+                    threading.Thread(target=lambda: messagebox.showinfo("New message",
+                                        "You have received a new message!",parent=self.root)).start()
+            except Exception as exception:
+                print(f"Error: {exception}")
+                if self.socket:
+                    self.socket.close()
+                    self.socket = None
+                break
 
     def exit_chat(self):
         if self.socket:
