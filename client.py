@@ -2,7 +2,7 @@ import tkinter as tk
 from tkinter import messagebox, scrolledtext
 import socket
 import threading
-
+import os
 
 class UI:
     def __init__(self, root):
@@ -43,7 +43,7 @@ class UI:
         register_button = tk.Button(button_frame, text="Register", command=register)
         register_button.pack()
 
-    def chat_ui(self, send):
+    def chat_ui(self, send, exit_app):
         # destroying the frames used for authentication to "hide them"
         for frame in self.root.winfo_children():
             frame.destroy()
@@ -66,6 +66,10 @@ class UI:
         # trigger the message sending function
         send_button = tk.Button(self.input_frame, text="Send", command=send)
         send_button.pack(side=tk.RIGHT)
+
+        # exit button
+        exit_button = tk.Button(self.input_frame, text="Exit", command=exit_app, bg="red", fg="white")
+        exit_button.pack(side=tk.RIGHT, padx=5)
 
     def show_message(self, message):
         self.chat_area.config(state=tk.NORMAL)
@@ -143,20 +147,20 @@ class ChatClient:
         # both registration and login has the same pattern:
         # get username and password, pass it to client authentication, and then process the result
         socket, result = self.auth_client.login(username, password)
-        self.handle_auth_result(socket, result, username)
+        self.handle_auth_result(socket, result)
 
     def handle_register(self):
         username = self.ui.username_field.get()
         password = self.ui.password_field.get()
 
         socket, result = self.auth_client.register(username, password)
-        self.handle_auth_result(socket, result, username)
+        self.handle_auth_result(socket, result)
 
     # process the result of login or register
-    def handle_auth_result(self, socket, result, username):
+    def handle_auth_result(self, socket, result):
         if socket:
             # authentication was successful
-            self.ui.chat_ui(self.send_message)
+            self.ui.chat_ui(self.send_message, self.exit_chat)
             self.start_thread(socket)
         else:
             messagebox.showinfo("Result", result)
@@ -203,6 +207,16 @@ class ChatClient:
             self.socket.close()
             self.socket = None
 
+    def exit_chat(self):
+        if self.socket:
+            try:
+                # inform the server
+                self.socket.send("EXIT".encode())
+                self.socket.close()  # before exiting the socket needs to be closed
+            except:
+                pass
+        # exit the app
+        os._exit(0)
 
 if __name__ == "__main__":
     root = tk.Tk()
