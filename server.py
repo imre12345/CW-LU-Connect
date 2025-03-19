@@ -137,12 +137,13 @@ class Authenticate:
 
 
 class ChatServer:
+
+    clients = []
+    clients_lock = threading.Lock()
+
     def __init__(self, database, semaphore=None):
         self.db = database
-        self.clients = []
-        self.clients_lock = threading.Lock()
         self.max_users = semaphore
-
         self.key = Fernet.generate_key()
         self.cipher = Fernet(self.key)
         os.makedirs('chat_log', exist_ok=True)
