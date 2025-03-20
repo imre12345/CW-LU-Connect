@@ -155,14 +155,39 @@ class ChatServer:
         with open(self.chat_log, 'ab') as f:
             f.write(encrypted_message + b'\n')
 
-    def client_connection(self, client_socket, username):
-
+    # add new observer
+    def add_observer(self, username, client_socket):
         # add the new user to the list of current clients (observers) list
         with self.clients_lock:
             self.clients.append((username, client_socket))
 
+    # remove observer
+    def remove_observer(self, client_socket):
+        # delete client from the list of current clients
+        with self.clients_lock:
+            self.clients = [(n, s) for n, s in self.clients if s != client_socket]
+
+    # notify all observers
+    def notify_observers(self, senders_username, message):
+        # Send message to everyone
+        with self.clients_lock:
+            for username, sock in self.clients:
+                try:
+                    sent_at = datetime.now().strftime("%H:%M:%S")
+                    formatted_message = f"from: {senders_username}, at:{sent_at}: {message}\n"
+
+                    self.save_enrcrypt_message(formatted_message)
+                    sock.send(formatted_message.encode())  # encode it to send it securely
+                except:
+                    pass  # the client is probably disconnected
+
+    def client_connection(self, client_socket, username):
+
+        # add the new user to the list of current clients (observers) list
+        self.add_observer(username, client_socket)
+
         # send a message that the user has joined
-        self.send_all("the server", f"{username} joined.")
+        self.notify_observers("the server", f"{username} joined.")
 
         try:
             # keep the connection and listen for messages
@@ -175,19 +200,18 @@ class ChatServer:
                 if message == "EXIT":
                     break
 
-                    # check if it's a file
+                # check if it's a file
                 if message.startswith(b"file:"):
                     self.process_file(message, username, client_socket)
                 else:
                     # when a message is received send it to the groupchat
-                    self.send_all(username, message)
+                    self.notify_observers(username, message)
         finally:
             # delete client from the list of current clients
-            with self.clients_lock:
-                self.clients = [(n, s) for n, s in self.clients if s != client_socket]
+            self.remove_observer(client_socket)
 
             # send a message that the user has left
-            self.send_all("the server", f"{username} left.")
+            self.notify_observers("the server", f"{username} left.")
 
             # user has left so the semaphore can be released
             self.max_users.release()
@@ -209,11 +233,11 @@ class ChatServer:
                 received += len(part)
 
             # check if the file type is valid, eventhough the client should already limit it
-            if not( filename.endswith('.pdf') or filename.endswith('.docx') or filename.endswith('.jpeg') ):
+            if not (filename.endswith('.pdf') or filename.endswith('.docx') or filename.endswith('.jpeg')):
                 client_socket.send(b"Only .pdf, .docx, and .jpeg files are allowed!!\n")
                 return
 
-            # encrypt and the store the file on the server
+            # encrypt and store the file on the server
             encrypted_file = self.cipher.encrypt(file_content)
             os.makedirs('file_storage', exist_ok=True)
             with open(os.path.join('file_storage', f'{filename}.enc'), 'wb') as f:
@@ -221,7 +245,7 @@ class ChatServer:
 
             # let everyone know that the user xy sent a file called . . .
             # then send the file to every client
-            self.send_all("the server", f"{sender_username} sent a file: {filename}")
+            self.notify_observers("the server", f"{sender_username} sent a file: {filename}")
 
             with self.clients_lock:
                 for username, sock in self.clients:
@@ -233,22 +257,6 @@ class ChatServer:
 
         except Exception as exception:
             print(f"Error: {exception}")
-
-
-    def send_all(self, senders_username, message):
-        # Send message to everyone
-        with self.clients_lock:
-            for username, client_socket in self.clients:
-                try:
-                    sent_at = datetime.now().strftime("%H:%M:%S")
-                    formatted_message = f"from: {senders_username}, at:{sent_at}: {message}\n"
-
-                    self.save_enrcrypt_message(formatted_message)
-
-                    client_socket.send(formatted_message.encode())  # encode it to send it securely
-                except:
-                    pass  # the client is probably disconnected
-
 
 
 if __name__ == "__main__":
