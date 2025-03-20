@@ -72,7 +72,7 @@ class Authenticate:
                 self.waiting_queue.append(client_socket)
                 position = len(self.waiting_queue)
 
-            waiting_message = f"The server is full, you are {position}. in queue, please wait.\n"
+            waiting_message = f"The server is full, you are {position}. in queue, please wait approximately: {position * 2} minutes.\n"
             client_socket.send(waiting_message.encode())
 
             # this will wait until release() is called
@@ -167,7 +167,7 @@ class ChatServer:
         try:
             # keep the connection and listen for messages
             while True:
-                message = client_socket.recv(1024).decode().strip()
+                message = client_socket.recv(4096)
                 if not message:
                     break
 
@@ -175,8 +175,12 @@ class ChatServer:
                 if message == "EXIT":
                     break
 
-                # when a message is received send it to the groupchat
-                self.send_all(username, message)
+                    # check if it's a file
+                if message.startswith(b"file:"):
+                    self.process_file(message, username, client_socket)
+                else:
+                    # when a message is received send it to the groupchat
+                    self.send_all(username, message)
         finally:
             # delete client from the list of current clients
             with self.clients_lock:
@@ -188,6 +192,47 @@ class ChatServer:
             # user has left so the semaphore can be released
             self.max_users.release()
 
+    def process_file(self, data, sender_username, client_socket):
+        try:
+            # parse the file
+            header, file_content = data.split(b"\n", 1)
+            _, filename, size = header.decode().split(":", 2)
+            size = int(size)
+
+            # receive data until the whole file is received
+            received = len(file_content)
+            while received < size:
+                part = client_socket.recv(4096)
+                if not part:
+                    break
+                file_content += part
+                received += len(part)
+
+            # check if the file type is valid, eventhough the client should already limit it
+            if not( filename.endswith('.pdf') or filename.endswith('.docx') or filename.endswith('.jpeg') ):
+                client_socket.send(b"Only .pdf, .docx, and .jpeg files are allowed!!\n")
+                return
+
+            # encrypt and the store the file on the server
+            encrypted_file = self.cipher.encrypt(file_content)
+            os.makedirs('file_storage', exist_ok=True)
+            with open(os.path.join('file_storage', f'{filename}.enc'), 'wb') as f:
+                f.write(encrypted_file)
+
+            # let everyone know that the user xy sent a file called . . .
+            # then send the file to every client
+            self.send_all("the server", f"{sender_username} sent a file: {filename}")
+
+            with self.clients_lock:
+                for username, sock in self.clients:
+                    try:
+                        full_data = f"file:{filename}:{size}\n".encode() + file_content
+                        sock.sendall(full_data)
+                    except Exception as exception:
+                        print(f"Error whlile sending a file to {username}: {exception}")
+
+        except Exception as exception:
+            print(f"Error: {exception}")
 
 
     def send_all(self, senders_username, message):
