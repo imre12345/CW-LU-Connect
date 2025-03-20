@@ -3,6 +3,7 @@ from tkinter import messagebox, scrolledtext
 import socket
 import threading
 import os
+from tkinter import filedialog
 
 class UI:
     def __init__(self, root):
@@ -43,7 +44,7 @@ class UI:
         register_button = tk.Button(button_frame, text="Register", command=register)
         register_button.pack()
 
-    def chat_ui(self, send, exit_app, mute):
+    def chat_ui(self, send, exit_app, mute, send_file):
         # destroying the frames used for authentication to "hide them"
         for frame in self.root.winfo_children():
             frame.destroy()
@@ -74,6 +75,9 @@ class UI:
         # Add mute button
         self.mute_button = tk.Button(self.input_frame, text="🔊 Mute", command=mute)
         self.mute_button.pack(side=tk.RIGHT, padx=10)
+
+        file_button = tk.Button(self.input_frame, text="Send file", command=send_file)
+        file_button.pack(side=tk.RIGHT, padx=10)
 
     def show_message(self, message):
         self.chat_area.config(state=tk.NORMAL)
@@ -149,6 +153,31 @@ class ChatClient:
         # initiate the authentication process
         self.ui.authentication_ui(self.handle_login, self.handle_register)
 
+
+    def send_file(self):
+        file_path = filedialog.askopenfilename(filetypes=[("Allowed Files", "*.pdf *.docx *.jpeg")])
+
+        if not file_path:
+            return  # the user canceled the file selecting
+
+        try:
+            # try to access the files name and data
+            filename = os.path.basename(file_path)
+            with open(file_path, 'rb') as f:
+                file_data = f.read()
+
+            # because of the formatting: file:filename:size
+            #                               binary_data
+            # my server implementation will know that it works with a file (not a message),
+            # and it will also know how many bytes to read.
+            header = f"file:{filename}:{len(file_data)}\n".encode()
+            self.socket.sendall(header + file_data)
+            self.ui.show_message(f"file sent: {filename}\n")
+
+        except Exception as exception:
+            messagebox.showerror("Error", f"file sending failed: {exception}")
+
+
     def mute_unmute(self):
         self.muted = not self.muted
         self.ui.mute_button.config(text="Unmute" if self.muted else "Mute")
@@ -174,13 +203,13 @@ class ChatClient:
     def handle_auth_result(self, socket, result, username):
         if socket:
             if "queue" in result:
-                messagebox.showinfo("Waiting", "the server is full, wait in the queue")
+                messagebox.showinfo("Waiting", result)
                 # start a thread that waits until a place becomes available
                 threading.Thread(target=self.wait_in_que, args=[socket]).start()
             else:
                 # authentication was successful
                 self.username = username
-                self.ui.chat_ui(self.send_message, self.exit_chat, self.mute_unmute)
+                self.ui.chat_ui(self.send_message, self.exit_chat, self.mute_unmute, self.send_file)
                 self.start_thread(socket)
         else:
             messagebox.showinfo("Result", result)
@@ -192,7 +221,7 @@ class ChatClient:
                 if "Successful" in message:
                     # there is finally an empty space
                     # the UI should be set up before starting the message thread
-                    self.root.after(0, self.ui.chat_ui, self.send_message, self.exit_chat, self.mute_unmute)
+                    self.root.after(0, self.ui.chat_ui, self.send_message, self.exit_chat, self.mute_unmute, self.send_file)
                     self.root.after(10, self.start_thread, socket)
                     break
             except:
@@ -202,7 +231,7 @@ class ChatClient:
         self.socket = socket
 
         # start a thread for receiving messages
-        threading.Thread(target=self.receive_messages).start()
+        threading.Thread(target=self.receive).start()
 
     def send_message(self):
         if not self.socket:
@@ -220,26 +249,57 @@ class ChatClient:
                 self.socket.close()
                 self.socket = None
 
-    def receive_messages(self):
+    def receive(self):
         # wait to receive messages from the server (Observer pattern)
+
+        # if the user does not have a directory, make one to save the file there
+        os.makedirs(f"{self.username}_downloads", exist_ok=True)
+
         while self.socket:
             try:
-                message = self.socket.recv(1024).decode()
-                if not message:
+                # receive data
+                data = self.socket.recv(4096)
+                if not data:
                     messagebox.showerror("Error", "Server closed the connection")
                     self.socket.close()
                     break
 
-                # show the message
-                self.ui.show_message(message)
+                # check if this is a file
+                if data.startswith(b"file:"):
+                    # parse file
+                    header, file_data = data.split(b"\n", 1)
+                    _, filename, size = header.decode().split(":", 2)
+                    size = int(size)
 
-                # no notification for the own message of the user, and no notification when joining
-                if not self.muted and f"from: {self.username}" not in message.split(",") and all(word not in message for word in["joined.", "Successful"]):
-                    self.root.bell()  # notification sound
+                    # receive data until the whole file is received
+                    received = len(file_data)
+                    while received < size:
+                        part = self.socket.recv(4096)
+                        file_data += part
+                        received += len(part)
 
-                    # create a new thread for the notification pup-up, so it does not block the main thread
-                    threading.Thread(target=lambda: messagebox.showinfo("New message",
-                                        "You have received a new message!",parent=self.root)).start()
+                    # save the file in the users folder
+                    with open(f"{self.username}_downloads/{filename}", "wb") as f:
+                        f.write(file_data)
+
+                    # get a message that the file is received
+                    self.ui.show_message(f"File received: {filename}\n")
+
+                    # notification sound
+                    if not self.muted:
+                        self.root.bell()
+                else:
+                    # it's a text massage
+                    message = data.decode()
+
+                    # show the message
+                    self.ui.show_message(message)
+
+                    # no notification for the own message of the user, and no notification when joining
+                    if not self.muted and f"from: {self.username}" not in message.split(",") and all(
+                            word not in message for word in ["joined.", "Successful"]):
+                        self.root.bell()  # notification sound
+
             except Exception as exception:
                 print(f"Error: {exception}")
                 if self.socket:
